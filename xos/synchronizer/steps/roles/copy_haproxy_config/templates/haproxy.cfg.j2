@@ -1,0 +1,71 @@
+{#
+Copyright 2017-present Open Networking Foundation
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#}
+
+#Configuration for {{loadbalancer.lb_name}}
+#Updated : {{update_time}}
+#Bind IP : {{loadbalancer.vip_address}}
+
+global
+    daemon
+    maxconn 256
+    log /dev/log local0
+    log /dev/log local1 notice
+    stats socket /run/{{loadbalancer.loadbalancer_id}}.sock mode 0666 level admin
+
+defaults
+    log global
+    timeout connect 5000
+    timeout client  50000
+    timeout server  50000
+
+{% if listener.stat_port != 0 %}
+listen stats 
+    #bind {{loadbalancer.vip_address}}:{{listener.stat_port}}
+    bind *:{{listener.stat_port}}
+    mode http
+    stats enable
+    stats refresh 2s
+    stats uri /stats
+{% endif %}
+
+frontend {{listener.listener_id}}
+    option tcplog
+{% if listener.protocol.lower() == "http" %}
+    option forwardfor
+{% endif %}
+    #bind {{loadbalancer.vip_address}}:{{listener.protocol_port}}
+    bind *:{{listener.protocol_port}}
+    mode {{listener.protocol.lower()}}
+    default_backend {{pool.pool_id}}
+
+backend {{pool.pool_id}}
+    mode {{pool.protocol.lower()}}
+{% if pool.lb_algorithm == "ROUND_ROBIN" %}
+    balance roundrobin
+{% elif pool.lb_algorithm == "LEAST_CONNECTIONS" %}
+    balance leastconn
+{% elif pool.lb_algorithm == "SOURCE_IP" %}
+    balance source
+{% endif %}
+    timeout check {{health_monitor.timeout}}
+{% if health_monitor.type == "HTTP" or health_monitor.type == "HTTPS" %}
+    option httpchk {{health_monitor.http_method}} {{health_monitor.url_path}}
+    http-check expect rstatus {{health_monitor.expected_codes|replace(",","|")}}
+{% endif %}
+{% for member in members.members %}
+{% set hm_opt = "check inter %ds fall %d"|format(health_monitor.delay, health_monitor.max_retries) %}
+    {{ "server %s %s:%d weight %d %s"|e|format(member.member_id, member.address, member.protocol_port, member.weight, hm_opt)|trim() }}
+{% endfor %}

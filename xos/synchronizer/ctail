@@ -1,0 +1,513 @@
+#!/usr/bin/perl -w
+
+###############################################################
+# [ctail utility]
+#
+# Perl implementation of 'tail -f'
+###############################################################
+
+use strict;
+
+
+
+#--------------------------------------------------------------
+# varaibles
+#--------------------------------------------------------------
+my %print_color = (
+	"RESET" 		=> "\033[0m",
+	"BRIGHT" 		=> "\033[1m",
+	"DIM" 			=> "\033[2m",
+	"UNDERLINE"		=> "\033[4m",
+	"BLINK" 		=> "\033[5m",
+	"INVERSE" 		=> "\033[7m",
+	"HIDDEN" 		=> "\033[8m",
+
+	"FG_BLACK" 		=> "\033[30m",
+	"FG_RED"	 	=> "\033[31m",
+	"FG_GREEN"	 	=> "\033[32m",
+	"FG_YELLOW"		=> "\033[33m",
+	"FG_BLUE" 		=> "\033[34m",
+	"FG_MAGENTA" 	=> "\033[35m",
+	"FG_CYAN" 		=> "\033[36m",
+	"FG_WHITE" 		=> "\033[37m",
+	"FG_DEFAULT"	=> "\033[39m",
+
+	"BG_BLACK" 		=> "\033[40m",
+	"BG_RED"	 	=> "\033[41m",
+	"BG_GREEN"	 	=> "\033[42m",
+	"BG_YELLOW"		=> "\033[43m",
+	"BG_BLUE" 		=> "\033[44m",
+	"BG_MAGENTA" 	=> "\033[45m",
+	"BG_CYAN" 		=> "\033[46m",
+	"BG_WHITE" 		=> "\033[47m",
+	"BG_DEFAULT"	=> "\033[49m"
+);
+
+
+# color option list 
+my @opt_list = qw(
+	__FG_RED_LIST__
+	__FG_GREEN_LIST__
+	__FG_BLUE_LIST__
+	__FG_CYAN_LIST__
+	__FG_MAGENTA_LIST__
+	__FG_YELLOW_LIST__
+	__BG_RED_LIST__
+	__BG_GREEN_LIST__
+	__BG_BLUE_LIST__
+	__BG_CYAN_LIST__
+	__BG_MAGENTA_LIST__
+	__BG_YELLOW_LIST__
+);
+
+# it depends on @opt_list
+my @fg_red_list;
+my @fg_green_list;
+my @fg_blue_list;
+my @fg_cyan_list;
+my @fg_magenta_list;
+my @fg_yellow_list;
+my @bg_red_list;
+my @bg_green_list;
+my @bg_blue_list;
+my @bg_cyan_list;
+my @bg_magenta_list;
+my @bg_yellow_list;
+
+# support next version
+my @blink_list;
+my @underline_list;
+
+# environment variables
+my @lines;
+my @tail;
+my $line = "";
+my $line_tmp = "";
+my $view_line = 20;
+my $line_size = 1024;
+my $size;
+
+my $i;
+my $j;
+my $conf_file = ".ctailrc";
+my $rc_flag = 0;
+my $pos;
+
+my $prog_name = "ctail";
+my $prog_version = "R0.9.6";
+my $prog_date = "2010-02-11";
+my $target_file;
+
+
+
+#--------------------------------------------------------------
+# main routine
+#--------------------------------------------------------------
+unless($#ARGV == 0 or $#ARGV == 1) {
+	print "at least one argument is required..\n";
+	help();
+	exit 1;
+} 
+
+if($ARGV[0] eq "-h"){
+	help();
+	exit 1;
+}
+
+if($ARGV[0] eq "-mkrc" or $ARGV[0] eq "-m"){
+	make_rc();
+	exit 1;
+}
+
+if($ARGV[0] eq "-p"){
+    if($#ARGV != 1) {
+        print "-p option need process name..\n";
+        help();
+        exit 1;
+    }
+    my $s = $ENV{"HOME"};
+    my $proc_name = uc($ARGV[1]);
+    my $dir = "$s/log/$proc_name";
+    my $file_name;
+    my $file_mtime;
+    my $target_mtime = 0;
+    my $conf_dir_file = "$s/log/$proc_name/.ctailrc";
+    opendir(DIR, $dir) or die "cant't open $dir: $!";
+    while($file_name = readdir DIR) {
+        next if $file_name =~ /^\.\.?$/;
+        next if $file_name =~ /core*/;
+        next if $file_name =~ /$conf_file/;
+        next if $file_name =~ /^\..*\.swp/;
+        $file_name = "$dir/$file_name";
+        $file_mtime = (stat $file_name)[9];
+        if($file_mtime > $target_mtime) {
+            $target_mtime = $file_mtime;
+            $target_file = $file_name;
+        }
+    }
+    print "target file = $target_file\n";
+    if(-r $conf_dir_file){
+        read_rc($conf_dir_file);
+        $rc_flag = 1;
+    }
+}
+
+elsif($ARGV[0] eq "-last" or $ARGV[0] eq "-l"){
+    my $dir = ".";
+    my $file_name;
+    my $file_mtime;
+    my $target_mtime = 0;
+    opendir(DIR, $dir) or die "cant't open $dir: $!";
+    while($file_name = readdir DIR) {
+        next if $file_name =~ /^\.\.?$/;
+        next if $file_name =~ /core*/;
+        next if $file_name =~ /$conf_file/;
+        next if $file_name =~ /^\..*\.swp/;
+        $file_mtime = (stat $file_name)[9];
+        if($file_mtime > $target_mtime) {
+            $target_mtime = $file_mtime;
+            $target_file = $file_name;
+        }
+    }
+    print "target file = $target_file\n";
+    if(-r $conf_file){
+        read_rc($conf_file);
+        $rc_flag = 1;
+    }
+}
+else {
+    $target_file = $ARGV[0];
+    if(-r $conf_file){
+        read_rc($conf_file);
+        $rc_flag = 1;
+    }
+}
+
+unless(-r $target_file){
+	print "invalid file format : $target_file\n";
+	help(0);
+	exit 1;
+}
+
+
+if($rc_flag == 0){
+	@fg_red_list	= ("(ERR)", "ERROR");
+	@fg_green_list	= ("(SVC)", "INFO");
+	@fg_cyan_list   = ("[MINR]");
+	@fg_yellow_list	= ("(DBG)", "DEBUG");
+}
+
+
+#
+# file open to read
+#
+
+unless (open (FH, $target_file)){
+	print "cannot open a file : $target_file\n";
+	exit 1;
+}
+
+#
+# read 20 lines before EOF.
+#
+
+# read all lines in the file
+#@lines = <FH>;
+#for($i=$#lines-$view_line ; $i<=$#lines ; $i++){
+#	if($i>=0){
+#		print_line($lines[$i]);
+#	}
+#}
+
+#
+# change to use small memories
+# ref : http://www.din.or.jp/~ohzaki/perl.htm#File_Tail
+#
+$size = (-s FH) / $line_size;
+$pos += $size <=> ($pos = int($size));
+while($pos--) {
+	seek(FH, $line_size * $pos, 0);
+	read(FH, $line, $line_size);
+	$line .= $line_tmp;
+	($line_tmp,  @lines) = $line =~ /[^\x0D\x0A]*\x0D?\x0A?/g;
+	pop(@lines);
+	unshift(@tail, @lines);
+	last if @tail >= $view_line;
+}
+
+unshift(@tail, $line_tmp);
+@tail = @tail[-$view_line .. -1] if @tail > $view_line;
+foreach(@tail){
+	print_line($_);
+}
+
+seek(FH, 0, 2);
+
+for(;;) {
+	while (<FH>){
+		print_line($_);
+	}
+	sleep 1;
+	seek(FH, 0, 1);
+}
+
+close (FH);
+exit 0;
+
+
+#--------------------------------------------------------------
+# help()
+#--------------------------------------------------------------
+sub help {
+	print <<"HELP";
+$print_color{"FG_GREEN"}
+== $prog_name utility ($prog_version $prog_date) ==
+$prog_name -h            # display this help message.
+$prog_name file_name     # it print tails of a file with ansi colour.
+$prog_name -mkrc or -m   # it make $conf_file sample config file to use it.
+$prog_name -last or -l   # tail last modified file
+$prog_name -p process    # tail telcoware process log (target directory is ~/log)
+$print_color{"RESET"}
+
+-- current support effect --
+* forground color   : $print_color{"FG_RED"}red$print_color{"RESET"}, $print_color{"FG_GREEN"}green$print_color{"RESET"}, $print_color{"FG_BLUE"}blue$print_color{"RESET"}, $print_color{"FG_CYAN"}cyan$print_color{"RESET"}, $print_color{"FG_MAGENTA"}magenta$print_color{"RESET"}, $print_color{"FG_YELLOW"}yellow$print_color{"RESET"}
+* background color  : $print_color{"BG_RED"}red$print_color{"RESET"}, $print_color{"BG_GREEN"}green$print_color{"RESET"}, $print_color{"BG_BLUE"}blue$print_color{"RESET"}, $print_color{"BG_CYAN"}cyan$print_color{"RESET"}, $print_color{"BG_MAGENTA"}magenta$print_color{"RESET"}, $print_color{"BG_YELLOW"}yellow$print_color{"RESET"}
+
+Report bugs to <khh_1980\@telcoware.com>.
+
+HELP
+	exit 1;
+}
+
+#--------------------------------------------------------------
+# read_rc()
+#--------------------------------------------------------------
+sub read_rc {
+	my $str_keyword;
+	my $is_keword = 0;
+    my $arg1 = $_[0];
+	unless (open (FH, $arg1)){
+		print $print_color{"FG_GREEN"};
+		die "[EROR]cannot open $arg1".$print_color{"RESET"}."\n";
+	}
+	
+	while (<FH>){
+		$str_keyword = $_; chomp($str_keyword); $str_keyword=trim($str_keyword);
+
+		foreach $i (@opt_list) {
+			if($str_keyword eq $i){
+				while (<FH>){
+					chomp($_); $_=trim($_);
+					if($_ eq ""){next;}
+
+					$is_keword = 0;
+					foreach $j (@opt_list){
+						if($j eq $str_keyword) 			{next;}
+						if($j eq $_)					{$is_keword = 1;last;}
+					}
+					if($is_keword)						{$str_keyword = $_; last;}
+
+					elsif($str_keyword eq $opt_list[0])	{push(@fg_red_list, $_);}
+					elsif($str_keyword eq $opt_list[1])	{push(@fg_green_list, $_);}
+					elsif($str_keyword eq $opt_list[2])	{push(@fg_blue_list, $_);}
+					elsif($str_keyword eq $opt_list[3])	{push(@fg_cyan_list, $_);}
+					elsif($str_keyword eq $opt_list[4])	{push(@fg_magenta_list, $_);}
+					elsif($str_keyword eq $opt_list[5])	{push(@fg_yellow_list, $_);}
+					elsif($str_keyword eq $opt_list[6])	{push(@bg_red_list, $_);}
+					elsif($str_keyword eq $opt_list[7])	{push(@bg_green_list, $_);}
+					elsif($str_keyword eq $opt_list[8])	{push(@bg_blue_list, $_);}
+					elsif($str_keyword eq $opt_list[9])	{push(@bg_cyan_list, $_);}
+					elsif($str_keyword eq $opt_list[10]){push(@bg_magenta_list, $_);}
+					elsif($str_keyword eq $opt_list[11]){push(@bg_yellow_list, $_);}
+				}
+			}
+		}
+	}
+
+
+	close (FH);
+}
+
+#--------------------------------------------------------------
+# print_line()
+#--------------------------------------------------------------
+sub print_line {
+	#FG RED
+	foreach $i (@fg_red_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"FG_RED"};
+			last;
+		}
+	}
+
+	#FG GREEN
+	foreach $i (@fg_green_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"FG_GREEN"};
+			last;
+		}
+	}
+
+	#FG BLUE
+	foreach $i (@fg_blue_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"FG_BLUE"};
+			last;
+		}
+	}
+
+	#FG CYAN
+	foreach $i (@fg_cyan_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"FG_CYAN"};
+			last;
+		}
+	}
+
+	#FG MANGENTA
+	foreach $i (@fg_magenta_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"FG_MAGENTA"};
+			last;
+		}
+	}
+
+	#FG YELLOW
+	foreach $i (@fg_yellow_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"FG_YELLOW"};
+			last;
+		}
+	}
+
+	#BG RED
+	foreach $i (@bg_red_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"BG_RED"};
+			last;
+		}
+	}
+
+	#BG GREEN
+	foreach $i (@bg_green_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"BG_GREEN"};
+			last;
+		}
+	}
+
+	#BG BLUE
+	foreach $i (@bg_blue_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"BG_BLUE"};
+			last;
+		}
+	}
+
+	#BG CYAN
+	foreach $i (@bg_cyan_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"BG_CYAN"};
+			last;
+		}
+	}
+
+	#BG MANGENTA
+	foreach $i (@bg_magenta_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"BG_MAGENTA"};
+			last;
+		}
+	}
+
+	#BG YELLOW
+	foreach $i (@bg_yellow_list){
+		if(index($_[0], $i) >= 0){
+			print $print_color{"BG_YELLOW"};
+			last;
+		}
+	}
+
+	chomp($_[0]);
+	print $_[0].$print_color{"RESET"}."\n";
+}
+
+#--------------------------------------------------------------
+# trim()
+#--------------------------------------------------------------
+sub trim {
+	my @result = @_;
+
+	foreach (@result) {
+		s/^\s+//;          # trim left space
+		s/\s+$//;          # trim right space
+	}
+	return wantarray ? @result : $result[0];
+}
+
+#--------------------------------------------------------------
+# make_rc()
+#--------------------------------------------------------------
+sub make_rc {
+	if(-r ".ctailrc"){
+		print $print_color{"FG_RED"};
+		die "[ERROR]$conf_file is already exist".$print_color{"RESET"}."\n";
+	}
+	print $print_color{"FG_GREEN"};
+	print "[INFO]make $conf_file file".$print_color{"RESET"}."\n";
+
+	# open file
+	open(FH, ">$conf_file");
+
+	print FH "#==============================================#\n";
+	print FH "# Resource file for ctail utility\n";
+	print FH "# Never remove reserved words.\n";
+	print FH "# Comment character is not exit.\n";
+	print FH "#==============================================#\n";
+
+	print FH "\n";
+	print FH "$opt_list[0]\n";
+	print FH "(ERR)\n";
+	print FH "[CRTC]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[1]\n";
+	print FH "(SVC)\n";
+	print FH "[MAJR]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[2]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[3]\n";
+	print FH "[MINR]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[4]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[5]\n";
+	print FH "(DBG)\n";
+	print FH "[DBUG]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[6]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[7]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[8]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[9]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[10]\n";
+	print FH "\n";
+	print FH "\n";
+	print FH "$opt_list[11]\n";
+
+	close(FH);
+}
+
